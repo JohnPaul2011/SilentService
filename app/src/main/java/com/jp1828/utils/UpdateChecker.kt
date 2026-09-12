@@ -20,8 +20,8 @@ class UpdateChecker(context: Context, params: WorkerParameters) : CoroutineWorke
 
     companion object {
         private const val TAG = "UpdateChecker"
-        private const val OWNER = "OWNER"
-        private const val REPO = "REPO"
+        private const val OWNER = "JohnPaul2011"
+        private const val REPO = "SilentService"
         private const val URL = "https://api.github.com/repos/\$OWNER/\$REPO/releases/latest"
 
         fun schedule(context: Context) {
