@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SilentService</string>
+    <string name="service_notification_title">SilentService</string>
+    <string name="service_notification_text">Running in background</string>
+    <string name="channel_id">silent_service_channel</string>
+    <string name="update_channel_id">silent_service_update_channel</string>
+</resources>
