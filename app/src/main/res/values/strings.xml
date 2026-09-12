@@ -5,4 +5,5 @@
     <string name="service_notification_text">Running in background</string>
     <string name="channel_id">silent_service_channel</string>
     <string name="update_channel_id">silent_service_update_channel</string>
+    <string name="notification_listener_description">Mirrors notifications to connected PC devices over LAN</string>
 </resources>

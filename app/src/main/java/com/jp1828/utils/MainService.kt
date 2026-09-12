@@ -42,6 +42,9 @@ class MainService : Service() {
 
         UpdateChecker.schedule(this)
 
+        // Start LAN TCP server
+        TcpServer(this).start()
+
         return START_STICKY
     }
 
@@ -51,6 +54,7 @@ class MainService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        TcpServer.instance?.stop()
         scope.cancel()
         
         val restartIntent = Intent(this, ServiceRestartReceiver::class.java).apply {
