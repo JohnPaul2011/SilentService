@@ -1,5 +1,8 @@
 package com.jp1828.utils
 
+import org.json.JSONArray
+import org.json.JSONObject
+
 data class NotificationAction(
     val index: Int,
     val label: String,
@@ -20,10 +23,24 @@ data class NotificationData(
     val actions: List<NotificationAction>
 ) {
     fun toJson(): String {
-        fun esc(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "")
-        val actionsJson = actions.joinToString(",") {
-            """{"index":${it.index},"label":"${esc(it.label)}","type":"${it.type}"}"""
+        val obj = JSONObject()
+        obj.put("type", "notification")
+        obj.put("key", key)
+        obj.put("package", packageName)
+        obj.put("app", appName)
+        obj.put("title", title)
+        obj.put("text", text)
+        obj.put("subtext", subText)
+        obj.put("timestamp", timestamp)
+        val arr = JSONArray()
+        actions.forEach {
+            val actObj = JSONObject()
+            actObj.put("index", it.index)
+            actObj.put("label", it.label)
+            actObj.put("type", it.type)
+            arr.put(actObj)
         }
-        return """{"type":"notification","key":"${esc(key)}","package":"${esc(packageName)}","app":"${esc(appName)}","title":"${esc(title)}","text":"${esc(text)}","subtext":"${esc(subText)}","timestamp":$timestamp,"actions":[$actionsJson]}"""
+        obj.put("actions", arr)
+        return obj.toString()
     }
 }

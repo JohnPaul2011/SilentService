@@ -16,13 +16,21 @@ import android.widget.TextView
 
 class MainActivity : Activity() {
 
+    private lateinit var rootLayout: LinearLayout
+    private lateinit var statusTextView: TextView
+    private lateinit var boundTextView: TextView
+    private var grantButton: Button? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val layout = LinearLayout(this).apply {
+        // Request rebind if already permitted
+        NotificationListener.requestRebind(this)
+
+        rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setPadding(60, 60, 60, 60)
+            setPadding(50, 40, 50, 40)
             setBackgroundColor(Color.parseColor("#1A1A2E"))
         }
 
@@ -30,7 +38,7 @@ class MainActivity : Activity() {
             TextView(this).apply {
                 this.text = text; textSize = size; setTextColor(color); gravity = Gravity.CENTER
                 if (bold) setTypeface(null, Typeface.BOLD)
-                setPadding(0, 16, 0, 16)
+                setPadding(0, 12, 0, 12)
             }
 
         fun btn(text: String, bg: String, onClick: () -> Unit) =
@@ -39,33 +47,72 @@ class MainActivity : Activity() {
                 setBackgroundColor(Color.parseColor(bg))
                 setTextColor(Color.WHITE)
                 layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, 140
-                ).apply { setMargins(0, 20, 0, 0) }
+                    LinearLayout.LayoutParams.MATCH_PARENT, 130
+                ).apply { setMargins(0, 16, 0, 0) }
                 setOnClickListener { onClick() }
             }
 
         val ip = getWifiIp()
-        val listenerEnabled = isNotificationListenerEnabled()
-        val listenerStatus = if (listenerEnabled) "✓ Notification Access Granted" else "✗ Notification Access Required"
-        val statusColor = if (listenerEnabled) Color.parseColor("#00E676") else Color.parseColor("#FF5252")
 
-        layout.apply {
-            addView(tv("SilentService", 28f, Color.WHITE, bold = true))
+        rootLayout.apply {
+            addView(tv("SilentService", 26f, Color.WHITE, bold = true))
             addView(tv("Notification Mirror", 14f, Color.GRAY))
             addView(tv("──────────────────────────", 12f, Color.DKGRAY))
-            addView(tv("Connect your PC to:", 13f, Color.LTGRAY))
-            addView(tv("$ip : ${TcpServer.PORT}", 22f, Color.parseColor("#64B5F6"), bold = true))
-            addView(tv(listenerStatus, 14f, statusColor))
-            if (!listenerEnabled) {
-                addView(btn("Grant Notification Access", "#E53935") {
-                    startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-                })
+            addView(tv("Connect PC to:", 13f, Color.LTGRAY))
+            addView(tv("$ip : ${TcpServer.PORT}", 20f, Color.parseColor("#64B5F6"), bold = true))
+
+            statusTextView = tv("", 14f, Color.WHITE)
+            addView(statusTextView)
+
+            boundTextView = tv("", 13f, Color.LTGRAY)
+            addView(boundTextView)
+
+            grantButton = btn("Grant Notification Access", "#E53935") {
+                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
             }
+            addView(grantButton)
+
             addView(btn("Start Service", "#0F3460") {
                 startForegroundService(Intent(this@MainActivity, MainService::class.java))
+                NotificationListener.requestRebind(this@MainActivity)
+                updateStatus()
+            })
+
+            addView(btn("Send Test Notification", "#43A047") {
+                TcpServer.ensureRunning(this@MainActivity)
+                TcpServer.instance?.sendTestNotification()
             })
         }
-        setContentView(layout)
+
+        setContentView(rootLayout)
+        updateStatus()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        NotificationListener.requestRebind(this)
+        updateStatus()
+    }
+
+    private fun updateStatus() {
+        val listenerEnabled = isNotificationListenerEnabled()
+        if (listenerEnabled) {
+            statusTextView.text = "✓ Notification Permission: GRANTED"
+            statusTextView.setTextColor(Color.parseColor("#00E676"))
+            grantButton?.visibility = Button.GONE
+        } else {
+            statusTextView.text = "✗ Notification Permission: REQUIRED"
+            statusTextView.setTextColor(Color.parseColor("#FF5252"))
+            grantButton?.visibility = Button.VISIBLE
+        }
+
+        if (NotificationListener.instance != null) {
+            boundTextView.text = "✓ Service Status: ACTIVE & LISTENING"
+            boundTextView.setTextColor(Color.parseColor("#00E676"))
+        } else {
+            boundTextView.text = "⚠️ Listener Not Bound Yet (Tap Start or toggle access)"
+            boundTextView.setTextColor(Color.parseColor("#FFB74D"))
+        }
     }
 
     private fun getWifiIp(): String = try {

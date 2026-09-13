@@ -1,8 +1,13 @@
 package com.jp1828.utils
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -24,6 +29,14 @@ class TcpServer(private val context: Context) {
         const val PORT = 5556
         var instance: TcpServer? = null
         private const val TAG = "TcpServer"
+
+        /** Ensure TcpServer is running — called from NotificationListener too */
+        fun ensureRunning(context: Context) {
+            if (instance == null) {
+                Log.d(TAG, "TcpServer not running, starting via ensureRunning()")
+                TcpServer(context.applicationContext).start()
+            }
+        }
     }
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -32,17 +45,23 @@ class TcpServer(private val context: Context) {
     private val notifications = ConcurrentHashMap<String, NotificationData>()
 
     fun start() {
+        if (instance != null && instance !== this) {
+            Log.w(TAG, "TcpServer already running, skipping duplicate start")
+            return
+        }
         instance = this
         scope.launch {
             try {
                 serverSocket = ServerSocket(PORT)
-                Log.d(TAG, "TCP server started on port $PORT")
+                Log.d(TAG, "✓ TCP server started on port $PORT")
+                // Heartbeat every 30s
                 launch {
                     while (isActive) {
                         delay(30_000)
                         broadcast("""{"type":"ping"}""")
                     }
                 }
+                // Accept loop
                 while (isActive) {
                     val socket = serverSocket?.accept() ?: break
                     Log.d(TAG, "Client connected: ${socket.inetAddress.hostAddress}")
@@ -50,6 +69,7 @@ class TcpServer(private val context: Context) {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Server error", e)
+                instance = null
             }
         }
     }
@@ -57,12 +77,21 @@ class TcpServer(private val context: Context) {
     private fun handleClient(socket: Socket) {
         val writer = PrintWriter(socket.getOutputStream(), true)
         clients.add(Pair(socket, writer))
+
+        // Trigger active notification sync from the listener
+        NotificationListener.instance?.syncActiveNotifications()
+
+        // Send status on connect so client knows listener state immediately
+        sendStatus(writer)
+
+        // Send any already-active notifications
         notifications.values.forEach { writer.println(it.toJson()) }
+
         try {
             val reader = BufferedReader(InputStreamReader(socket.inputStream))
             var line: String?
             while (reader.readLine().also { line = it } != null) {
-                line?.let { processClientMessage(it) }
+                line?.let { processClientMessage(it, writer) }
             }
         } catch (e: Exception) {
             Log.d(TAG, "Client disconnected: ${socket.inetAddress.hostAddress}")
@@ -72,7 +101,18 @@ class TcpServer(private val context: Context) {
         }
     }
 
-    private fun processClientMessage(json: String) {
+    /** Send a status packet — lets the PC client know if the listener is active */
+    fun sendStatus(writer: PrintWriter? = null) {
+        val listenerActive = NotificationListener.instance != null
+        val json = """{"type":"status","listener_active":$listenerActive,"active_notifications":${notifications.size},"clients":${clients.size}}"""
+        if (writer != null) {
+            runCatching { writer.println(json) }
+        } else {
+            broadcast(json)
+        }
+    }
+
+    private fun processClientMessage(json: String, sender: PrintWriter? = null) {
         try {
             val obj = JSONObject(json)
             when (obj.optString("type")) {
@@ -87,7 +127,16 @@ class TcpServer(private val context: Context) {
                     NotificationListener.instance?.cancelNotification(key)
                     removeNotification(key)
                 }
-                "pong" -> Log.d(TAG, "Pong received")
+                "refresh", "list" -> {
+                    NotificationListener.instance?.syncActiveNotifications()
+                    sendStatus(sender)
+                    notifications.values.forEach { sender?.println(it.toJson()) }
+                }
+                "test" -> {
+                    sendTestNotification()
+                }
+                "status" -> sendStatus(sender)
+                "pong"   -> Log.d(TAG, "Pong received from client")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error processing message: $json", e)
@@ -106,15 +155,33 @@ class TcpServer(private val context: Context) {
         clients.removeAll(dead.toSet())
     }
 
-    fun storeNotification(data: NotificationData) { notifications[data.key] = data }
-    fun removeNotification(key: String) { notifications.remove(key) }
+    fun storeNotification(data: NotificationData) {
+        notifications[data.key] = data
+    }
+
+    fun removeNotification(key: String) {
+        notifications.remove(key)
+    }
+
+    /** Called by NotificationListener when its connection state changes */
+    fun broadcastListenerStatus(connected: Boolean) {
+        broadcast("""{"type":"status","listener_active":$connected,"active_notifications":${notifications.size},"clients":${clients.size}}""")
+    }
 
     fun sendAction(key: String, actionIndex: Int, replyText: String?) {
-        val data = notifications[key] ?: run { Log.w(TAG, "Notification not found: $key"); return }
-        val action = data.actions.getOrNull(actionIndex) ?: run { Log.w(TAG, "Action $actionIndex not found"); return }
+        val data = notifications[key] ?: run {
+            Log.w(TAG, "Notification not found: $key")
+            return
+        }
+        val action = data.actions.getOrNull(actionIndex) ?: run {
+            Log.w(TAG, "Action index $actionIndex not found")
+            return
+        }
         try {
-            if (action.type == "reply" && replyText != null && action.remoteInputs != null && action.remoteInputResultKey != null) {
-                val intent = android.content.Intent()
+            if (action.type == "reply" && replyText != null &&
+                action.remoteInputs != null && action.remoteInputResultKey != null
+            ) {
+                val intent = Intent()
                 val bundle = Bundle()
                 bundle.putString(action.remoteInputResultKey, replyText)
                 android.app.RemoteInput.addResultsToIntent(action.remoteInputs, intent, bundle)
@@ -127,6 +194,24 @@ class TcpServer(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error sending action", e)
         }
+    }
+
+    fun sendTestNotification() {
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val channelId = "silent_service_test_channel"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(channelId, "Test Channel", NotificationManager.IMPORTANCE_HIGH)
+            manager.createNotificationChannel(channel)
+        }
+        val notif = NotificationCompat.Builder(context, channelId)
+            .setContentTitle("SilentService Test")
+            .setContentText("Notification mirroring is working! " + java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date()))
+            .setSmallIcon(R.drawable.ic_service)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .build()
+        manager.notify(999, notif)
+        Log.d(TAG, "Test notification dispatched")
     }
 
     fun stop() {
