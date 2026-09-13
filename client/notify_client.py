@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 SilentService Notification Client
-Mirrors Android notifications to your PC terminal and displays native Windows toast popups.
+Mirrors Android notifications to your PC terminal and displays native Windows toast popups
+for recent / incoming notifications only (no historical toast spam).
 
 Usage:
     python notify_client.py <PHONE_IP> [PORT]
@@ -30,12 +31,16 @@ MAGENTA = "\033[95m"
 PORT = 5556
 IP = "127.0.0.1"
 
+# Only toast notifications from the last 120 seconds
+MAX_TOAST_AGE_SECONDS = 120
+
 notifications = {}
 key_to_index = {}
 next_index = [1]
 lock = threading.Lock()
 sock = [None]
 running = [True]
+initial_sync_complete = [False]
 
 # Check if winotify is installed for faster native Windows toasts
 HAS_WINOTIFY = False
@@ -48,6 +53,26 @@ if sys.platform == "win32":
 
 def ts():
     return datetime.now().strftime("%H:%M:%S")
+
+def should_show_toast(data, is_new_key, content_changed):
+    """Determine if a Windows toast popup should be shown."""
+    # Don't toast if not a new notification and content hasn't changed
+    if not is_new_key and not content_changed:
+        return False
+
+    # Don't spam toasts for the initial backlog of historical notifications on connect
+    if not initial_sync_complete[0]:
+        return False
+
+    # Check notification timestamp age if provided by Android
+    ts_ms = data.get("timestamp")
+    if ts_ms and isinstance(ts_ms, (int, float)):
+        age_seconds = time.time() - (ts_ms / 1000.0)
+        # If notification is older than the max age threshold, don't popup a toast
+        if age_seconds > MAX_TOAST_AGE_SECONDS:
+            return False
+
+    return True
 
 def show_windows_toast(app_name, title, message, idx):
     """Displays a native Windows toast notification popup in the bottom right corner."""
@@ -119,7 +144,10 @@ def show_windows_toast(app_name, title, message, idx):
 def print_notif(data):
     with lock:
         key = data["key"]
-        if key in key_to_index:
+        is_new_key = key not in key_to_index
+        old_data = notifications.get(key_to_index.get(key)) if not is_new_key else None
+
+        if not is_new_key:
             idx = key_to_index[key]
         else:
             idx = next_index[0]
@@ -131,6 +159,13 @@ def print_notif(data):
     title = data.get("title", "")
     text = data.get("text", "")
     actions = data.get("actions", [])
+
+    content_changed = False
+    if old_data:
+        if old_data.get("title") != title or old_data.get("text") != text:
+            content_changed = True
+    else:
+        content_changed = True
 
     print(f"\n{BOLD}{CYAN}[#{idx}] {app}{RESET}  {DIM}{ts()}{RESET}")
     if title:
@@ -144,8 +179,9 @@ def print_notif(data):
             print(f"    {a['index']}: {t} {a['label']}")
     print()
 
-    # Trigger native Windows Toast Notification
-    show_windows_toast(app, title, text, idx)
+    # Trigger native Windows Toast only if recent & not part of historical sync backlog
+    if should_show_toast(data, is_new_key, content_changed):
+        show_windows_toast(app, title, text, idx)
 
 def list_notifs():
     with lock:
@@ -303,6 +339,11 @@ def input_loop():
         else:
             print(f"{DIM}Commands: l (list), t (test), s (status), r <#> <text>, a <#> <n>, d <#>, q (quit){RESET}")
 
+def wait_for_initial_sync():
+    time.sleep(2.0)
+    initial_sync_complete[0] = True
+    print(f"{DIM}✓ Windows toasts ready for new incoming notifications (threshold: {MAX_TOAST_AGE_SECONDS}s){RESET}\n")
+
 def connect():
     while running[0]:
         try:
@@ -310,7 +351,12 @@ def connect():
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect((IP, PORT))
             sock[0] = s
-            print(f"{GREEN}✓ Connected to SilentService! Waiting for notifications...{RESET}\n")
+            initial_sync_complete[0] = False
+            print(f"{GREEN}✓ Connected to SilentService! Syncing active notifications...{RESET}")
+            
+            # Start timer to finish initial sync
+            threading.Thread(target=wait_for_initial_sync, daemon=True).start()
+
             # Request initial status and sync
             s.sendall(b'{"type":"status"}\n{"type":"refresh"}\n')
             t = threading.Thread(target=recv_loop, daemon=True)
