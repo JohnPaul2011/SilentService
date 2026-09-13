@@ -1,0 +1,2 @@
+# Optional: install winotify for ultra-fast native Windows toast notifications
+winotify>=1.1.0

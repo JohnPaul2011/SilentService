@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 SilentService Notification Client
-Mirrors Android notifications to your PC terminal.
+Mirrors Android notifications to your PC terminal and displays native Windows toast popups.
 
 Usage:
     python notify_client.py <PHONE_IP> [PORT]
@@ -15,7 +15,7 @@ Commands:
     d <#>          - dismiss notification #
     q              - quit
 """
-import socket, json, threading, sys, time
+import socket, json, threading, sys, time, subprocess
 from datetime import datetime
 
 RESET = "\033[0m"
@@ -37,8 +37,84 @@ lock = threading.Lock()
 sock = [None]
 running = [True]
 
+# Check if winotify is installed for faster native Windows toasts
+HAS_WINOTIFY = False
+if sys.platform == "win32":
+    try:
+        import winotify
+        HAS_WINOTIFY = True
+    except ImportError:
+        HAS_WINOTIFY = False
+
 def ts():
     return datetime.now().strftime("%H:%M:%S")
+
+def show_windows_toast(app_name, title, message, idx):
+    """Displays a native Windows toast notification popup in the bottom right corner."""
+    if sys.platform != "win32":
+        return
+
+    # Option 1: winotify (fastest, clean)
+    if HAS_WINOTIFY:
+        try:
+            h = f"[#{idx}] {app_name}" if app_name else f"[#{idx}]"
+            t = f"{h} - {title}" if title else h
+            toast = winotify.Notification(
+                app_id="SilentService",
+                title=t,
+                msg=message or "(No message text)",
+                duration="short"
+            )
+            toast.set_audio(winotify.audio.Default, loop=False)
+            toast.show()
+            return
+        except Exception:
+            pass
+
+    # Option 2: Pure Windows PowerShell WinRT toast (Zero installs needed!)
+    def run_ps():
+        try:
+            def xml_esc(s):
+                return (
+                    str(s)
+                    .replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                    .replace('"', "&quot;")
+                    .replace("'", "&apos;")
+                )
+
+            h = f"[#{idx}] {app_name}" if app_name else f"[#{idx}]"
+            full_title = xml_esc(f"{h} - {title}" if title else h)
+            full_msg = xml_esc(message or "(No message text)")
+
+            ps_script = f"""
+            [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+            $template = @"
+            <toast>
+                <visual>
+                    <binding template="ToastGeneric">
+                        <text>{full_title}</text>
+                        <text>{full_msg}</text>
+                    </binding>
+                </visual>
+                <audio src="ms-winsoundevent:Notification.Default" />
+            </toast>
+"@
+            $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+            $xml.LoadXml($template)
+            $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+            [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("SilentService").Show($toast)
+            """
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps_script],
+                creationflags=flags,
+            )
+        except Exception:
+            pass
+
+    threading.Thread(target=run_ps, daemon=True).start()
 
 def print_notif(data):
     with lock:
@@ -67,6 +143,9 @@ def print_notif(data):
             t = f"{YELLOW}[reply]{RESET}" if a["type"] == "reply" else f"{GREEN}[action]{RESET}"
             print(f"    {a['index']}: {t} {a['label']}")
     print()
+
+    # Trigger native Windows Toast Notification
+    show_windows_toast(app, title, text, idx)
 
 def list_notifs():
     with lock:
@@ -252,6 +331,9 @@ if __name__ == "__main__":
         PORT = int(sys.argv[2])
     print(f"{BOLD}{MAGENTA}SilentService Notification Client{RESET}")
     print(f"Target: {IP}:{PORT}")
+    if sys.platform == "win32":
+        toast_mode = "winotify" if HAS_WINOTIFY else "built-in PowerShell WinRT (no extra deps)"
+        print(f"Windows Toast Engine: {GREEN}{toast_mode}{RESET}")
     print(f"{DIM}──────────────────────────────────────────{RESET}")
     threading.Thread(target=connect, daemon=True).start()
     time.sleep(1.0)
